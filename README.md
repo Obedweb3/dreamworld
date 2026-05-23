@@ -1,100 +1,76 @@
-# 📱 Safaricom SIM Serial Scanner
+# 📱 DREAMWORD PROJECT — SIM Serial Scanner
+**Made by Obed Tech**
 
-A mobile web app to scan Safaricom SIM card barcodes and store serials in a PostgreSQL database.
+Scan Safaricom SIM card barcodes with your phone camera and store serials in a Vercel Postgres database.
 
 ## Features
-- 📷 Camera barcode scanning (phone/webcam)
-- 💾 PostgreSQL database storage
+- 📷 Real camera barcode scanner (ZXing engine)
+- 🔦 Flashlight/torch toggle for low-light scanning
+- 💾 Vercel Postgres database (free, built-in)
 - 🔍 Search & filter records
-- 📊 Status tracking (In Stock / Sold / Inactive)
-- ⬇️ CSV export
-- 📱 Mobile-first design
+- 📊 Status tracking: In Stock / Sold / Inactive
+- 📥 Bulk import (paste many serials at once)
+- ⬇️ CSV export for Excel/Google Sheets
+- 📱 Mobile-first PWA design
 
 ---
 
-## 🚀 Deploy to Vercel (Step by Step)
+## 🚀 Deploy to Vercel — Step by Step
 
-### Step 1 — Create a free database
+### 1. Push to GitHub
+```bash
+git init
+git add .
+git commit -m "Initial commit"
+# Create repo on github.com, then:
+git remote add origin https://github.com/YOUR_USERNAME/sim-scanner.git
+git push -u origin main
+```
 
-Go to **[Neon.tech](https://neon.tech)** (free PostgreSQL):
-1. Sign up → Create a project → Copy the **Connection string**
-   It looks like: `postgresql://user:pass@ep-xxx.us-east-1.aws.neon.tech/neondb?sslmode=require`
+### 2. Import on Vercel
+1. Go to **vercel.com** → New Project
+2. Import your GitHub repo → Click **Deploy**
 
-> You can also use [Supabase](https://supabase.com) → Project Settings → Database → Connection string (use the "URI" format)
+### 3. Add FREE Vercel Postgres database
+After first deploy:
+1. Open your project on Vercel → click **Storage** tab
+2. Click **Create Database** → choose **Postgres** → name it `sim-db`
+3. Click **Connect to Project** → Vercel auto-sets all DB env vars
 
-### Step 2 — Deploy to Vercel
+### 4. Redeploy
+Deployments tab → 3 dots on latest → **Redeploy**
 
-1. Push this project to **GitHub**:
-   ```bash
-   git init
-   git add .
-   git commit -m "Initial commit"
-   # Create a repo on github.com then:
-   git remote add origin https://github.com/YOUR_USERNAME/sim-scanner.git
-   git push -u origin main
-   ```
-
-2. Go to **[vercel.com](https://vercel.com)** → New Project → Import your GitHub repo
-
-3. In Vercel, go to **Settings → Environment Variables** and add:
-   ```
-   DATABASE_URL = postgresql://user:pass@host/dbname
-   ```
-
-4. Click **Deploy** — your app will be live in ~1 minute!
-
-### Step 3 — Initialize the database
-
-After deploying, visit:
+### 5. Initialize the table (once)
+Visit in browser:
 ```
 https://your-app.vercel.app/api/init
 ```
-This creates the `sim_serials` table automatically (it's safe to run multiple times).
+Should return: `{"ok":true,"message":"Database ready"}`
+
+✅ Done!
 
 ---
 
-## 💻 Local Development
-
+## 💻 Local Dev
 ```bash
-# 1. Install dependencies
 npm install
-
-# 2. Set up environment
-cp .env.example .env.local
-# Edit .env.local and add your DATABASE_URL
-
-# 3. Initialize database (run once)
-curl -X POST http://localhost:3000/api/init
-
-# 4. Start dev server
-npm run dev
+npm i -g vercel
+vercel link          # link to your Vercel project
+vercel env pull      # download DB credentials to .env.local
+npm run dev          # http://localhost:3000
 ```
-
-Open http://localhost:3000
 
 ---
 
-## 📋 Database Schema
-
-```sql
-CREATE TABLE sim_serials (
-  id          SERIAL PRIMARY KEY,
-  serial      VARCHAR(30) NOT NULL UNIQUE,
-  status      VARCHAR(20) NOT NULL DEFAULT 'in_stock',
-  note        TEXT,
-  scanned_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-```
-
-## API Endpoints
+## API Reference
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/init` | Create database table |
-| GET | `/api/serials` | List serials (supports `?search=&status=&page=`) |
-| POST | `/api/serials` | Save a serial `{serial, note, status}` |
-| PATCH | `/api/serials` | Update status/note `{id, status, note}` |
-| DELETE | `/api/serials?id=123` | Delete one record |
-| DELETE | `/api/serials?id=all` | Delete all records |
+| POST | `/api/init` | Create table (safe to run multiple times) |
+| GET | `/api/serials` | List serials (`?search=&status=&page=`) |
+| POST | `/api/serials` | Save one serial `{serial, note, status}` |
+| PATCH | `/api/serials` | Update `{id, status, note}` |
+| DELETE | `/api/serials?id=123` | Delete one |
+| DELETE | `/api/serials?id=all` | Delete all |
+| POST | `/api/bulk` | Bulk import `{serials: string[]}` |
 | GET | `/api/export` | Download CSV |
