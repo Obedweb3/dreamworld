@@ -1,42 +1,46 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
-import { query } from '../../lib/db'
+import { sql } from '../../lib/db'
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   try {
     if (req.method === 'GET') {
       const { search, status, page = '1', limit = '30' } = req.query
       const offset = (parseInt(page as string) - 1) * parseInt(limit as string)
-      const conditions: string[] = []
-      const params: unknown[] = []
+      const lim = parseInt(limit as string)
 
-      if (search) {
-        params.push(`%${search}%`)
-        conditions.push(`(serial ILIKE $${params.length} OR note ILIKE $${params.length})`)
+      // Build filtered queries
+      let rows, total, stats
+
+      if (search && status && status !== 'all') {
+        const like = `%${search}%`
+        const r = await sql`SELECT * FROM sim_serials WHERE (serial ILIKE ${like} OR note ILIKE ${like}) AND status=${status as string} ORDER BY scanned_at DESC LIMIT ${lim} OFFSET ${offset}`
+        const c = await sql`SELECT COUNT(*) FROM sim_serials WHERE (serial ILIKE ${like} OR note ILIKE ${like}) AND status=${status as string}`
+        rows = r.rows; total = parseInt(c.rows[0].count)
+      } else if (search) {
+        const like = `%${search}%`
+        const r = await sql`SELECT * FROM sim_serials WHERE serial ILIKE ${like} OR note ILIKE ${like} ORDER BY scanned_at DESC LIMIT ${lim} OFFSET ${offset}`
+        const c = await sql`SELECT COUNT(*) FROM sim_serials WHERE serial ILIKE ${like} OR note ILIKE ${like}`
+        rows = r.rows; total = parseInt(c.rows[0].count)
+      } else if (status && status !== 'all') {
+        const r = await sql`SELECT * FROM sim_serials WHERE status=${status as string} ORDER BY scanned_at DESC LIMIT ${lim} OFFSET ${offset}`
+        const c = await sql`SELECT COUNT(*) FROM sim_serials WHERE status=${status as string}`
+        rows = r.rows; total = parseInt(c.rows[0].count)
+      } else {
+        const r = await sql`SELECT * FROM sim_serials ORDER BY scanned_at DESC LIMIT ${lim} OFFSET ${offset}`
+        const c = await sql`SELECT COUNT(*) FROM sim_serials`
+        rows = r.rows; total = parseInt(c.rows[0].count)
       }
-      if (status && status !== 'all') {
-        params.push(status)
-        conditions.push(`status = $${params.length}`)
-      }
 
-      const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
-      const countResult = await query(`SELECT COUNT(*) FROM sim_serials ${where}`, params)
-      const total = parseInt(countResult.rows[0].count)
-
-      const dataParams = [...params, parseInt(limit as string), offset]
-      const dataResult = await query(
-        `SELECT * FROM sim_serials ${where} ORDER BY scanned_at DESC LIMIT $${dataParams.length - 1} OFFSET $${dataParams.length}`,
-        dataParams
-      )
-
-      const statsResult = await query(`
-        SELECT COUNT(*) as total,
+      const s = await sql`
+        SELECT
+          COUNT(*) as total,
           COUNT(*) FILTER (WHERE status='in_stock') as in_stock,
           COUNT(*) FILTER (WHERE status='sold') as sold,
           COUNT(*) FILTER (WHERE status='inactive') as inactive
         FROM sim_serials
-      `)
-
-      res.json({ rows: dataResult.rows, total, stats: statsResult.rows[0] })
+      `
+      stats = s.rows[0]
+      res.json({ rows, total, stats })
     }
 
     else if (req.method === 'POST') {
@@ -45,11 +49,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         return res.status(400).json({ error: 'Invalid serial number' })
       }
       const cleaned = serial.trim().replace(/\s+/g, '')
-      const result = await query(
-        `INSERT INTO sim_serials (serial, note, status) VALUES ($1, $2, $3)
-         ON CONFLICT (serial) DO NOTHING RETURNING *`,
-        [cleaned, note || null, status]
-      )
+      const result = await sql`
+        INSERT INTO sim_serials (serial, note, status)
+        VALUES (${cleaned}, ${note || null}, ${status})
+        ON CONFLICT (serial) DO NOTHING
+        RETURNING *
+      `
       if (result.rows.length === 0) {
         return res.status(409).json({ error: 'Serial already exists', duplicate: true })
       }
@@ -59,10 +64,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     else if (req.method === 'PATCH') {
       const { id, status, note } = req.body
       if (!id) return res.status(400).json({ error: 'Missing id' })
-      const result = await query(
-        `UPDATE sim_serials SET status=$1, note=$2, updated_at=NOW() WHERE id=$3 RETURNING *`,
-        [status, note, id]
-      )
+      const result = await sql`
+        UPDATE sim_serials SET status=${status}, note=${note}, updated_at=NOW()
+        WHERE id=${id} RETURNING *
+      `
       res.json({ ok: true, row: result.rows[0] })
     }
 
@@ -70,10 +75,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const { id } = req.query
       if (!id) return res.status(400).json({ error: 'Missing id' })
       if (id === 'all') {
-        await query('DELETE FROM sim_serials')
+        await sql`DELETE FROM sim_serials`
         return res.json({ ok: true, deleted: 'all' })
       }
-      await query('DELETE FROM sim_serials WHERE id=$1', [id])
+      await sql`DELETE FROM sim_serials WHERE id=${id as string}`
       res.json({ ok: true })
     }
 

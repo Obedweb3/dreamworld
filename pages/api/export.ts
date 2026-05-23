@@ -1,12 +1,13 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
-import { query } from '../../lib/db'
+import { sql } from '../../lib/db'
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'GET') return res.status(405).end()
   try {
-    const result = await query(
-      `SELECT serial, status, note, scanned_at, updated_at FROM sim_serials ORDER BY scanned_at DESC`
-    )
+    const result = await sql`
+      SELECT serial, status, note, scanned_at, updated_at
+      FROM sim_serials ORDER BY scanned_at DESC
+    `
     const header = ['Serial', 'Status', 'Note', 'Scanned At', 'Updated At']
     const rows = result.rows.map(r => [
       r.serial,
