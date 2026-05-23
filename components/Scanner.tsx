@@ -10,7 +10,8 @@ export default function Scanner({ onDetected }: ScannerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const animRef = useRef<number | null>(null)
-  const readerRef = useRef<unknown>(null)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const readerRef = useRef<any>(null)
   const lastCodeRef = useRef('')
   const lastTimeRef = useRef(0)
 
@@ -19,16 +20,15 @@ export default function Scanner({ onDetected }: ScannerProps) {
   const [torchSupported, setTorchSupported] = useState(false)
   const [status, setStatus] = useState('Press Start to begin scanning')
   const [error, setError] = useState('')
-  const [lastDetected, setLastDetected] = useState('')
 
   const stopScanner = useCallback(() => {
     if (animRef.current) { cancelAnimationFrame(animRef.current); animRef.current = null }
     if (readerRef.current) {
-      try { (readerRef.current as { reset: () => void }).reset() } catch {}
+      try { readerRef.current.reset() } catch {}
       readerRef.current = null
     }
     if (streamRef.current) {
-      streamRef.current.getTracks().forEach(t => t.stop())
+      streamRef.current.getTracks().forEach((t: MediaStreamTrack) => t.stop())
       streamRef.current = null
     }
     if (videoRef.current) videoRef.current.srcObject = null
@@ -65,7 +65,6 @@ export default function Scanner({ onDetected }: ScannerProps) {
       })
       streamRef.current = stream
 
-      // Check torch support
       const track = stream.getVideoTracks()[0]
       const capabilities = track.getCapabilities() as MediaTrackCapabilities & { torch?: boolean }
       setTorchSupported(!!capabilities.torch)
@@ -75,7 +74,6 @@ export default function Scanner({ onDetected }: ScannerProps) {
         await videoRef.current.play()
       }
 
-      // Load ZXing
       const { BrowserMultiFormatReader, DecodeHintType, BarcodeFormat } = await import('@zxing/library')
       const hints = new Map()
       hints.set(DecodeHintType.POSSIBLE_FORMATS, [
@@ -94,7 +92,6 @@ export default function Scanner({ onDetected }: ScannerProps) {
 
       setStatus('📷 Point camera at the barcode')
 
-      // Continuous decode loop
       const decode = async () => {
         if (!videoRef.current || !canvasRef.current || !readerRef.current) return
         const video = videoRef.current
@@ -108,19 +105,24 @@ export default function Scanner({ onDetected }: ScannerProps) {
         canvas.height = video.videoHeight
         ctx.drawImage(video, 0, 0)
         try {
-          const result = await (reader as { decodeFromCanvas: (c: HTMLCanvasElement) => { getText: () => string } }).decodeFromCanvas(canvas)
+          const luminanceSource = new (await import('@zxing/library')).HTMLCanvasElementLuminanceSource(canvas)
+          const binaryBitmap = new (await import('@zxing/library')).BinaryBitmap(
+            new (await import('@zxing/library')).HybridBinarizer(luminanceSource)
+          )
+          const result = readerRef.current.decode(binaryBitmap)
           if (result) {
             const code = result.getText()
             const now = Date.now()
             if (code !== lastCodeRef.current || now - lastTimeRef.current > 3000) {
               lastCodeRef.current = code
               lastTimeRef.current = now
-              setLastDetected(code)
               setStatus('✅ Detected! Review below.')
               onDetected(code)
             }
           }
-        } catch {}
+        } catch {
+          // NotFoundException is thrown when no barcode found — this is normal
+        }
         animRef.current = requestAnimationFrame(decode)
       }
       animRef.current = requestAnimationFrame(decode)
@@ -137,7 +139,6 @@ export default function Scanner({ onDetected }: ScannerProps) {
 
   return (
     <div>
-      {/* Video + overlay */}
       <div style={{
         width: '100%', aspectRatio: '4/3', background: '#000',
         borderRadius: 14, overflow: 'hidden', position: 'relative',
@@ -147,10 +148,8 @@ export default function Scanner({ onDetected }: ScannerProps) {
         <video ref={videoRef} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} muted playsInline />
         <canvas ref={canvasRef} style={{ display: 'none' }} />
 
-        {/* Scan frame overlay */}
         {active && (
           <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
-            {/* Dark overlay with cutout effect */}
             <svg width="100%" height="100%" style={{ position: 'absolute', inset: 0 }}>
               <defs>
                 <mask id="scanMask">
@@ -160,17 +159,15 @@ export default function Scanner({ onDetected }: ScannerProps) {
               </defs>
               <rect width="100%" height="100%" fill="rgba(0,0,0,0.45)" mask="url(#scanMask)"/>
             </svg>
-            {/* Corner brackets */}
             <div style={{ position: 'relative', width: '72%', height: '24%', zIndex: 2 }}>
               {[
-                { top: 0, left: 0, borderTop: '3px solid #00a650', borderLeft: '3px solid #00a650' },
-                { top: 0, right: 0, borderTop: '3px solid #00a650', borderRight: '3px solid #00a650' },
-                { bottom: 0, left: 0, borderBottom: '3px solid #00a650', borderLeft: '3px solid #00a650' },
-                { bottom: 0, right: 0, borderBottom: '3px solid #00a650', borderRight: '3px solid #00a650' },
+                { top: 0, left: 0, borderTop: '3px solid #00a650', borderLeft: '3px solid #00a650' } as React.CSSProperties,
+                { top: 0, right: 0, borderTop: '3px solid #00a650', borderRight: '3px solid #00a650' } as React.CSSProperties,
+                { bottom: 0, left: 0, borderBottom: '3px solid #00a650', borderLeft: '3px solid #00a650' } as React.CSSProperties,
+                { bottom: 0, right: 0, borderBottom: '3px solid #00a650', borderRight: '3px solid #00a650' } as React.CSSProperties,
               ].map((s, i) => (
                 <div key={i} style={{ position: 'absolute', width: 20, height: 20, borderRadius: 2, ...s }} />
               ))}
-              {/* Animated scan line */}
               <div style={{
                 position: 'absolute', left: 4, right: 4, height: 2,
                 background: 'linear-gradient(90deg, transparent, #00a650, transparent)',
@@ -180,26 +177,18 @@ export default function Scanner({ onDetected }: ScannerProps) {
           </div>
         )}
 
-        {/* Torch button overlay */}
         {active && torchSupported && (
-          <button
-            onClick={toggleTorch}
-            style={{
-              position: 'absolute', bottom: 12, right: 12,
-              width: 44, height: 44, borderRadius: '50%',
-              background: torchOn ? '#FFD700' : 'rgba(0,0,0,0.6)',
-              border: torchOn ? '2px solid #FFD700' : '2px solid rgba(255,255,255,0.3)',
-              color: torchOn ? '#000' : '#fff',
-              fontSize: 20, cursor: 'pointer', display: 'flex',
-              alignItems: 'center', justifyContent: 'center',
-              backdropFilter: 'blur(4px)',
-              boxShadow: torchOn ? '0 0 12px rgba(255,215,0,0.6)' : 'none',
-              transition: 'all 0.2s',
-            }}
-            title={torchOn ? 'Turn off flashlight' : 'Turn on flashlight'}
-          >
-            🔦
-          </button>
+          <button onClick={toggleTorch} style={{
+            position: 'absolute', bottom: 12, right: 12,
+            width: 44, height: 44, borderRadius: '50%',
+            background: torchOn ? '#FFD700' : 'rgba(0,0,0,0.6)',
+            border: torchOn ? '2px solid #FFD700' : '2px solid rgba(255,255,255,0.3)',
+            color: torchOn ? '#000' : '#fff',
+            fontSize: 20, cursor: 'pointer', display: 'flex',
+            alignItems: 'center', justifyContent: 'center',
+            boxShadow: torchOn ? '0 0 12px rgba(255,215,0,0.6)' : 'none',
+            transition: 'all 0.2s',
+          }}>🔦</button>
         )}
 
         {!active && (
@@ -210,15 +199,8 @@ export default function Scanner({ onDetected }: ScannerProps) {
         )}
       </div>
 
-      <style>{`
-        @keyframes scanline {
-          0% { top: 4px; opacity: 1; }
-          50% { top: calc(100% - 6px); opacity: 1; }
-          100% { top: 4px; opacity: 1; }
-        }
-      `}</style>
+      <style>{`@keyframes scanline { 0%{top:4px;opacity:1} 50%{top:calc(100% - 6px);opacity:1} 100%{top:4px;opacity:1} }`}</style>
 
-      {/* Controls */}
       <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
         {!active ? (
           <button className="btn-primary" onClick={startScanner} style={{ flex: 1, fontSize: 15, padding: '12px 0' }}>
@@ -230,22 +212,15 @@ export default function Scanner({ onDetected }: ScannerProps) {
           </button>
         )}
         {active && torchSupported && (
-          <button
-            onClick={toggleTorch}
-            style={{
-              padding: '12px 16px', fontSize: 20,
-              background: torchOn ? '#FFD700' : undefined,
-              borderColor: torchOn ? '#FFD700' : undefined,
-            }}
-            title="Toggle flashlight"
-          >
-            🔦
-          </button>
+          <button onClick={toggleTorch} style={{
+            padding: '12px 16px', fontSize: 20,
+            background: torchOn ? '#FFD700' : undefined,
+            borderColor: torchOn ? '#FFD700' : undefined,
+          }}>🔦</button>
         )}
       </div>
 
-      {/* Status */}
-      <p style={{ fontSize: 13, textAlign: 'center', marginTop: 8, minHeight: 20, color: error ? '#dc2626' : lastDetected ? '#00a650' : '#666' }}>
+      <p style={{ fontSize: 13, textAlign: 'center', marginTop: 8, minHeight: 20, color: error ? '#dc2626' : '#666' }}>
         {error || status}
       </p>
     </div>
