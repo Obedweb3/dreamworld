@@ -234,45 +234,48 @@ export default function Home() {
             {/* Detected serial card */}
             {detectedSerial && (
               <div style={{
-                background: '#f0fdf4', border: '1.5px solid #86efac',
-                borderRadius: 14, padding: '16px', marginTop: 14,
-                boxShadow: '0 2px 8px rgba(0,166,80,0.1)',
+                background: 'linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%)',
+                border: '2px solid #00a650',
+                borderRadius: 16, padding: '18px', marginTop: 14,
+                boxShadow: '0 4px 20px rgba(0,166,80,0.15)',
               }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-                  <span style={{ background: '#00a650', color: '#fff', fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 99, letterSpacing: 0.5 }}>DETECTED</span>
-                  <span style={{ fontSize: 11, color: '#6b7280' }}>ICCID Serial Number</span>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <div style={{ width: 10, height: 10, borderRadius: '50%', background: '#00a650', boxShadow: '0 0 8px rgba(0,166,80,0.6)' }} />
+                    <span style={{ fontSize: 12, fontWeight: 700, color: '#00a650', textTransform: 'uppercase', letterSpacing: 1 }}>Barcode Detected</span>
+                  </div>
+                  <button onClick={() => setDetectedSerial('')} style={{ border: 'none', background: 'none', color: '#9ca3af', fontSize: 18, cursor: 'pointer', padding: '0 4px' }}>✕</button>
                 </div>
                 <div style={{
-                  fontFamily: 'monospace', fontSize: 18, fontWeight: 800,
-                  wordBreak: 'break-all', color: '#111', letterSpacing: 1,
-                  background: '#fff', border: '1px solid #d1fae5',
-                  borderRadius: 8, padding: '10px 12px', marginBottom: 12,
+                  background: '#fff', border: '1.5px solid #86efac', borderRadius: 12,
+                  padding: '14px 16px', marginBottom: 14,
                 }}>
-                  {detectedSerial}
+                  <div style={{ fontSize: 10, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 }}>ICCID Serial Number</div>
+                  <div style={{ fontFamily: 'monospace', fontSize: 20, fontWeight: 900, wordBreak: 'break-all', color: '#111', letterSpacing: 2, lineHeight: 1.4 }}>
+                    {detectedSerial}
+                  </div>
+                  <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 6 }}>{detectedSerial.length} digits</div>
                 </div>
-                <input
-                  type="text"
-                  placeholder="Note (optional) — e.g. batch #7724 or KES 50"
-                  value={note}
-                  onChange={e => setNote(e.target.value)}
-                  style={{ marginBottom: 8 }}
-                />
-                <select value={saveStatus} onChange={e => setSaveStatus(e.target.value as typeof saveStatus)} style={{ marginBottom: 12 }}>
-                  <option value="in_stock">📦 In Stock</option>
-                  <option value="sold">💰 Sold</option>
-                  <option value="inactive">❌ Inactive</option>
-                </select>
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <button
-                    className="btn-primary"
-                    onClick={handleSaveDetected}
-                    disabled={saving}
-                    style={{ flex: 1, padding: '12px 0', fontSize: 14 }}
-                  >
-                    {saving ? '⏳ Saving...' : '💾 Save to Database'}
-                  </button>
-                  <button onClick={() => setDetectedSerial('')} style={{ padding: '12px 16px', color: '#6b7280' }}>✕</button>
+                <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                  <input type="text" placeholder="Note (e.g. KES 50 batch #7724)" value={note} onChange={e => setNote(e.target.value)} style={{ flex: 1 }} />
+                  <select value={saveStatus} onChange={e => setSaveStatus(e.target.value as typeof saveStatus)} style={{ width: 'auto' }}>
+                    <option value="in_stock">📦 Stock</option>
+                    <option value="sold">💰 Sold</option>
+                    <option value="inactive">❌ Off</option>
+                  </select>
                 </div>
+                <button
+                  className="btn-primary"
+                  onClick={handleSaveDetected}
+                  disabled={saving}
+                  style={{
+                    width: '100%', padding: '16px 0', fontSize: 17,
+                    fontWeight: 800, borderRadius: 12, letterSpacing: 0.5,
+                    boxShadow: '0 4px 16px rgba(0,166,80,0.4)',
+                  }}
+                >
+                  {saving ? '⏳ Saving to database...' : '💾 SAVE TO DATABASE'}
+                </button>
               </div>
             )}
 
