@@ -143,7 +143,7 @@ export default function Scanner({ onDetected }: ScannerProps) {
           facingMode: { ideal: 'environment' },
           width:  { ideal: 1920, min: 640 },
           height: { ideal: 1080, min: 480 },
-          advanced: [{ focusMode: 'continuous' }],
+
         } as MediaTrackConstraints
       })
       streamRef.current = stream
