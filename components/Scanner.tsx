@@ -6,88 +6,170 @@ interface ScannerProps {
 }
 
 export default function Scanner({ onDetected }: ScannerProps) {
-  const videoRef    = useRef<HTMLVideoElement>(null)
-  const canvasRef   = useRef<HTMLCanvasElement>(null)
-  const streamRef   = useRef<MediaStream | null>(null)
-  const rafRef      = useRef<number | null>(null)
+  const videoRef  = useRef<HTMLVideoElement>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const overlayRef = useRef<HTMLCanvasElement>(null)
+  const streamRef = useRef<MediaStream | null>(null)
+  const rafRef    = useRef<number | null>(null)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const readerRef   = useRef<any>(null)
-  const lastCode    = useRef('')
-  const lastTime    = useRef(0)
+  const readerRef = useRef<any>(null)
+  const lastCode  = useRef('')
+  const lastTime  = useRef(0)
+  const frameCount = useRef(0)
 
   const [active,         setActive]         = useState(false)
   const [torchOn,        setTorchOn]        = useState(false)
   const [torchSupported, setTorchSupported] = useState(false)
   const [status,         setStatus]         = useState<'idle'|'starting'|'scanning'|'detected'>('idle')
-  const [lastDetected,   setLastDetected]   = useState('')
+  const [detectedCode,   setDetectedCode]   = useState('')
   const [error,          setError]          = useState('')
-  const [brightness,     setBrightness]     = useState<'ok'|'low'|''>('')
+  const [lowLight,       setLowLight]       = useState(false)
+  const [confidence,     setConfidence]     = useState(0) // scan line feedback
 
-  /* ── stop everything ── */
   const stopScanner = useCallback(() => {
     if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null }
     if (readerRef.current) { try { readerRef.current.reset() } catch {} readerRef.current = null }
     if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null }
-    if (videoRef.current)  { videoRef.current.srcObject = null }
-    setActive(false); setTorchOn(false); setStatus('idle'); setBrightness('')
+    if (videoRef.current) videoRef.current.srcObject = null
+    setActive(false); setTorchOn(false); setStatus('idle')
+    setLowLight(false); setConfidence(0); setDetectedCode('')
   }, [])
 
-  /* ── torch toggle ── */
   const toggleTorch = useCallback(async () => {
     if (!streamRef.current) return
     const track = streamRef.current.getVideoTracks()[0]
-    if (!track) return
     try {
       const next = !torchOn
       await track.applyConstraints({ advanced: [{ torch: next } as MediaTrackConstraintSet] })
       setTorchOn(next)
-    } catch (e) { console.warn('Torch not supported', e) }
+    } catch {}
   }, [torchOn])
 
-  /* ── measure average brightness of canvas ── */
-  const measureBrightness = (ctx: CanvasRenderingContext2D, w: number, h: number) => {
-    try {
-      const sample = ctx.getImageData(w * 0.25, h * 0.35, w * 0.5, h * 0.3)
-      let sum = 0
-      for (let i = 0; i < sample.data.length; i += 4) {
-        sum += 0.299 * sample.data[i] + 0.587 * sample.data[i+1] + 0.114 * sample.data[i+2]
-      }
-      return sum / (sample.data.length / 4)
-    } catch { return 128 }
+  /* Sharpen + enhance contrast on canvas for better barcode reading */
+  const enhanceForBarcode = (ctx: CanvasRenderingContext2D, w: number, h: number) => {
+    // Crop just the center region where barcode is likely
+    const cropX = Math.floor(w * 0.05)
+    const cropY = Math.floor(h * 0.25)
+    const cropW = Math.floor(w * 0.90)
+    const cropH = Math.floor(h * 0.50)
+    const imgData = ctx.getImageData(cropX, cropY, cropW, cropH)
+    const d = imgData.data
+
+    // Convert to grayscale + increase contrast
+    for (let i = 0; i < d.length; i += 4) {
+      const gray = 0.299 * d[i] + 0.587 * d[i+1] + 0.114 * d[i+2]
+      // Stretch contrast: push darks darker, lights lighter
+      const enhanced = Math.min(255, Math.max(0, (gray - 100) * 1.8 + 100))
+      d[i] = d[i+1] = d[i+2] = enhanced
+    }
+    ctx.putImageData(imgData, cropX, cropY)
+
+    // Measure brightness for low-light detection
+    let sum = 0
+    for (let i = 0; i < d.length; i += 16) sum += d[i]
+    return sum / (d.length / 16)
   }
 
-  /* ── start scanner ── */
+  /* Draw scan line animation on overlay canvas */
+  const drawOverlay = useCallback((w: number, h: number, detected: boolean) => {
+    const oc = overlayRef.current
+    if (!oc) return
+    oc.width = w; oc.height = h
+    const ctx = oc.getContext('2d')
+    if (!ctx) return
+
+    const bx = w * 0.06, by = h * 0.28, bw = w * 0.88, bh = h * 0.44
+
+    // dim surround
+    ctx.fillStyle = 'rgba(0,0,0,0.48)'
+    ctx.fillRect(0, 0, w, h)
+    ctx.clearRect(bx, by, bw, bh)
+
+    // border
+    ctx.strokeStyle = detected ? '#00ff88' : '#00a650'
+    ctx.lineWidth = detected ? 3 : 2
+    ctx.strokeRect(bx, by, bw, bh)
+
+    // corner brackets
+    const cs = 22, cw = detected ? 4 : 3
+    ctx.strokeStyle = detected ? '#00ff88' : '#00a650'
+    ctx.lineWidth = cw
+    const corners = [
+      [bx, by, bx+cs, by, bx, by+cs],
+      [bx+bw, by, bx+bw-cs, by, bx+bw, by+cs],
+      [bx, by+bh, bx+cs, by+bh, bx, by+bh-cs],
+      [bx+bw, by+bh, bx+bw-cs, by+bh, bx+bw, by+bh-cs],
+    ]
+    corners.forEach(([x1,y1,x2,y2,x3,y3]) => {
+      ctx.beginPath(); ctx.moveTo(x2,y2); ctx.lineTo(x1,y1); ctx.lineTo(x3,y3); ctx.stroke()
+    })
+
+    if (!detected) {
+      // animated scan line
+      const t = (Date.now() % 2000) / 2000
+      const scanY = by + 4 + (bh - 8) * Math.abs(Math.sin(t * Math.PI))
+      const grad = ctx.createLinearGradient(bx, 0, bx + bw, 0)
+      grad.addColorStop(0, 'transparent')
+      grad.addColorStop(0.3, 'rgba(0,166,80,0.4)')
+      grad.addColorStop(0.5, '#00ff88')
+      grad.addColorStop(0.7, 'rgba(0,166,80,0.4)')
+      grad.addColorStop(1, 'transparent')
+      ctx.fillStyle = grad
+      ctx.fillRect(bx, scanY - 1, bw, 3)
+
+      // glow
+      ctx.shadowColor = '#00a650'
+      ctx.shadowBlur = 8
+      ctx.fillRect(bx, scanY - 1, bw, 2)
+      ctx.shadowBlur = 0
+    } else {
+      // green fill on detection
+      ctx.fillStyle = 'rgba(0,255,136,0.12)'
+      ctx.fillRect(bx, by, bw, bh)
+      ctx.fillStyle = '#00ff88'
+      ctx.font = `bold ${Math.floor(bh * 0.25)}px sans-serif`
+      ctx.textAlign = 'center'
+      ctx.fillText('✓ DETECTED', bx + bw/2, by + bh/2 + 6)
+    }
+  }, [])
+
   const startScanner = useCallback(async () => {
-    setError(''); setStatus('starting'); setActive(true); setLastDetected('')
+    setError(''); setStatus('starting'); setActive(true)
+    setDetectedCode(''); setConfidence(0); setLowLight(false)
 
     try {
-      /* 1. get camera stream — prefer back camera, high res */
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: { ideal: 'environment' },
           width:  { ideal: 1920, min: 640 },
           height: { ideal: 1080, min: 480 },
-          focusMode: 'continuous' as ConstrainDOMString,
+          advanced: [{ focusMode: 'continuous' }],
         } as MediaTrackConstraints
       })
       streamRef.current = stream
 
-      /* 2. check torch support */
       const track = stream.getVideoTracks()[0]
       const caps  = track.getCapabilities() as MediaTrackCapabilities & { torch?: boolean }
       setTorchSupported(!!caps.torch)
 
-      /* 3. attach to video */
+      // try to set zoom to 1.5x for closer barcode reading
+      try {
+        const capAny = caps as Record<string, unknown>
+        if (capAny.zoom) {
+          await track.applyConstraints({ advanced: [{ zoom: 1.5 } as MediaTrackConstraintSet] })
+        }
+      } catch {}
+
       if (videoRef.current) {
         videoRef.current.srcObject = stream
         await videoRef.current.play()
       }
 
-      /* 4. load ZXing dynamically */
+      // Load ZXing with CODE_128 prioritized (Safaricom uses CODE_128)
       const ZX = await import('@zxing/library')
       const hints = new Map()
       hints.set(ZX.DecodeHintType.POSSIBLE_FORMATS, [
-        ZX.BarcodeFormat.CODE_128,
+        ZX.BarcodeFormat.CODE_128,  // ← Safaricom ICCID barcode format
         ZX.BarcodeFormat.EAN_13,
         ZX.BarcodeFormat.EAN_8,
         ZX.BarcodeFormat.ITF,
@@ -95,38 +177,40 @@ export default function Scanner({ onDetected }: ScannerProps) {
         ZX.BarcodeFormat.CODE_93,
         ZX.BarcodeFormat.UPC_A,
         ZX.BarcodeFormat.UPC_E,
-        ZX.BarcodeFormat.CODABAR,
       ])
       hints.set(ZX.DecodeHintType.TRY_HARDER, true)
-      hints.set(ZX.DecodeHintType.ASSUME_GS1, false)
 
       const reader = new ZX.BrowserMultiFormatReader(hints)
       readerRef.current = reader
       setStatus('scanning')
 
-      let brightCheckFrame = 0
-
-      /* 5. RAF decode loop */
       const loop = async () => {
         const video  = videoRef.current
         const canvas = canvasRef.current
         if (!video || !canvas || !readerRef.current) return
 
+        frameCount.current++
+        const detected = status === 'detected'
+
         if (video.readyState >= 2 && video.videoWidth > 0) {
-          canvas.width  = video.videoWidth
-          canvas.height = video.videoHeight
+          const vw = video.videoWidth, vh = video.videoHeight
+          canvas.width = vw; canvas.height = vh
+
           const ctx = canvas.getContext('2d', { willReadFrequently: true })
           if (ctx) {
             ctx.drawImage(video, 0, 0)
 
-            /* brightness check every 30 frames */
-            brightCheckFrame++
-            if (brightCheckFrame % 30 === 0) {
-              const avg = measureBrightness(ctx, canvas.width, canvas.height)
-              setBrightness(avg < 60 ? 'low' : 'ok')
+            // draw animated overlay every frame
+            drawOverlay(vw, vh, detected)
+
+            // brightness check every 20 frames
+            if (frameCount.current % 20 === 0) {
+              const avg = enhanceForBarcode(ctx, vw, vh)
+              setLowLight(avg < 55)
+              setConfidence(Math.min(100, Math.floor(avg / 2.55)))
             }
 
-            /* decode */
+            // decode every frame for maximum speed
             try {
               const lum    = new ZX.HTMLCanvasElementLuminanceSource(canvas)
               const hybrid = new ZX.HybridBinarizer(lum)
@@ -136,174 +220,119 @@ export default function Scanner({ onDetected }: ScannerProps) {
               if (result) {
                 const code = result.getText().trim()
                 const now  = Date.now()
+                // Only fire if code changed or 4s have passed
                 if (code && (code !== lastCode.current || now - lastTime.current > 4000)) {
                   lastCode.current = code
                   lastTime.current = now
-                  setLastDetected(code)
+                  setDetectedCode(code)
                   setStatus('detected')
                   onDetected(code)
-                  /* brief pause then resume scanning */
-                  setTimeout(() => { if (readerRef.current) setStatus('scanning') }, 2000)
+                  drawOverlay(vw, vh, true)
+                  // resume scanning after 2.5s
+                  setTimeout(() => {
+                    if (readerRef.current) setStatus('scanning')
+                  }, 2500)
                 }
               }
             } catch {
-              /* NotFoundException on every frame without barcode — completely normal */
+              // NotFoundException = no barcode visible yet, perfectly normal
             }
           }
         }
-
         rafRef.current = requestAnimationFrame(loop)
       }
       rafRef.current = requestAnimationFrame(loop)
 
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : 'Unknown error'
-      setError(msg.includes('Permission') || msg.includes('NotAllowed')
-        ? 'Camera permission denied. Please allow camera access and try again.'
-        : 'Could not start camera: ' + msg)
-      setActive(false)
-      setStatus('idle')
+      const msg = e instanceof Error ? e.message : ''
+      setError(
+        msg.includes('NotAllowed') || msg.includes('Permission')
+          ? '❌ Camera permission denied. Please allow camera access in your browser settings.'
+          : '❌ Could not start camera: ' + (msg || 'Unknown error')
+      )
+      setActive(false); setStatus('idle')
     }
-  }, [onDetected])
+  }, [onDetected, drawOverlay, status])
 
-  useEffect(() => () => { stopScanner() }, [stopScanner])
-
-  const statusText = {
-    idle:     'Press Start Scanner to begin',
-    starting: 'Starting camera...',
-    scanning: 'Point camera at the barcode on the SIM package',
-    detected: `✅ Detected: ${lastDetected.slice(0, 14)}...`,
-  }[status]
+  useEffect(() => () => stopScanner(), [stopScanner])
 
   return (
     <div>
-      {/* ── Viewfinder ── */}
+      {/* ═══ Viewfinder ═══ */}
       <div style={{
-        width: '100%', aspectRatio: '4/3',
-        background: '#0a0a0a', borderRadius: 16, overflow: 'hidden',
-        position: 'relative',
-        border: status === 'detected' ? '2.5px solid #00a650'
-              : active               ? '2px solid #444'
-              :                        '2px solid #222',
-        boxShadow: status === 'detected' ? '0 0 0 4px rgba(0,166,80,0.25)' : 'none',
-        transition: 'border-color 0.3s, box-shadow 0.3s',
+        width: '100%', aspectRatio: '4/3', background: '#000',
+        borderRadius: 16, overflow: 'hidden', position: 'relative',
+        border: status === 'detected' ? '3px solid #00ff88'
+              : active               ? '2px solid #333'
+              :                        '2px solid #1a1a1a',
+        boxShadow: status === 'detected' ? '0 0 0 4px rgba(0,255,136,0.2)' : 'none',
+        transition: 'border-color 0.2s, box-shadow 0.2s',
       }}>
+        {/* live video */}
         <video
           ref={videoRef}
-          style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
           muted playsInline autoPlay
         />
+        {/* hidden processing canvas */}
         <canvas ref={canvasRef} style={{ display: 'none' }} />
+        {/* overlay canvas for scan frame */}
+        <canvas
+          ref={overlayRef}
+          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
+        />
 
-        {/* scan frame + animated line */}
-        {active && status !== 'detected' && (
-          <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
-            {/* dim overlay with cutout */}
-            <svg width="100%" height="100%" style={{ position: 'absolute', inset: 0 }}>
-              <defs>
-                <mask id="cut">
-                  <rect width="100%" height="100%" fill="white"/>
-                  <rect x="12%" y="35%" width="76%" height="30%" rx="10" fill="black"/>
-                </mask>
-              </defs>
-              <rect width="100%" height="100%" fill="rgba(0,0,0,0.5)" mask="url(#cut)"/>
-            </svg>
-
-            {/* corner brackets */}
-            <div style={{ position: 'relative', width: '76%', height: '30%', zIndex: 2 }}>
-              {([
-                { top:0, left:0,  borderTop:'3px solid #00a650', borderLeft:'3px solid #00a650'  },
-                { top:0, right:0, borderTop:'3px solid #00a650', borderRight:'3px solid #00a650' },
-                { bottom:0, left:0,  borderBottom:'3px solid #00a650', borderLeft:'3px solid #00a650'  },
-                { bottom:0, right:0, borderBottom:'3px solid #00a650', borderRight:'3px solid #00a650' },
-              ] as React.CSSProperties[]).map((s, i) => (
-                <div key={i} style={{ position:'absolute', width:22, height:22, ...s }} />
-              ))}
-              {/* sweeping scan line */}
-              <div style={{
-                position: 'absolute', left: 6, right: 6, height: 2,
-                background: 'linear-gradient(90deg, transparent 0%, #00a650 40%, #00ff88 50%, #00a650 60%, transparent 100%)',
-                boxShadow: '0 0 6px #00a650',
-                animation: 'sweep 2s ease-in-out infinite',
-              }}/>
-            </div>
-          </div>
-        )}
-
-        {/* detected flash overlay */}
-        {status === 'detected' && (
+        {/* low light banner */}
+        {active && lowLight && !torchOn && (
           <div style={{
-            position: 'absolute', inset: 0, background: 'rgba(0,166,80,0.15)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            animation: 'flashin 0.2s ease',
+            position: 'absolute', top: 10, left: 10, right: 10, zIndex: 10,
+            background: 'rgba(0,0,0,0.82)', borderRadius: 10,
+            padding: '8px 14px', display: 'flex', alignItems: 'center', gap: 8,
+            border: '1px solid rgba(255,215,0,0.4)',
           }}>
-            <div style={{ background: '#00a650', borderRadius: 12, padding: '12px 24px', textAlign: 'center' }}>
-              <div style={{ fontSize: 28 }}>✅</div>
-              <div style={{ color: '#fff', fontWeight: 700, fontSize: 13, marginTop: 4 }}>Barcode detected!</div>
+            <span style={{ fontSize: 20 }}>🔦</span>
+            <div>
+              <div style={{ color: '#FFD700', fontSize: 12, fontWeight: 700 }}>Low light detected!</div>
+              <div style={{ color: 'rgba(255,255,255,0.7)', fontSize: 11 }}>Tap the torch button to turn on flashlight</div>
             </div>
           </div>
         )}
 
-        {/* torch button — bottom right of viewfinder */}
+        {/* torch button inside viewfinder */}
         {active && torchSupported && (
           <button onClick={toggleTorch} style={{
-            position: 'absolute', bottom: 14, right: 14,
-            width: 46, height: 46, borderRadius: '50%',
-            background: torchOn ? '#FFD700' : 'rgba(0,0,0,0.65)',
-            border: torchOn ? '2.5px solid #FFD700' : '2px solid rgba(255,255,255,0.25)',
-            fontSize: 22, cursor: 'pointer',
+            position: 'absolute', bottom: 14, right: 14, zIndex: 10,
+            width: 50, height: 50, borderRadius: '50%', fontSize: 24,
+            background: torchOn ? '#FFD700' : 'rgba(0,0,0,0.7)',
+            border: torchOn ? '3px solid #FFD700' : '2px solid rgba(255,255,255,0.2)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            boxShadow: torchOn ? '0 0 16px rgba(255,215,0,0.7)' : '0 2px 8px rgba(0,0,0,0.4)',
-            transition: 'all 0.2s', zIndex: 10,
-          }} title={torchOn ? 'Turn off flashlight' : 'Turn on flashlight'}>
-            🔦
-          </button>
+            cursor: 'pointer',
+            boxShadow: torchOn ? '0 0 20px rgba(255,215,0,0.8)' : '0 2px 12px rgba(0,0,0,0.5)',
+            transition: 'all 0.2s',
+          }}>🔦</button>
         )}
 
-        {/* low light warning */}
-        {active && brightness === 'low' && !torchOn && (
-          <div style={{
-            position: 'absolute', top: 12, left: 12, right: 12,
-            background: 'rgba(0,0,0,0.75)', borderRadius: 8,
-            padding: '7px 12px', display: 'flex', alignItems: 'center', gap: 8, zIndex: 10,
-          }}>
-            <span style={{ fontSize: 16 }}>🔦</span>
-            <span style={{ color: '#FFD700', fontSize: 12, fontWeight: 600 }}>
-              Low light detected — tap the torch button to turn on the flashlight
-            </span>
-          </div>
-        )}
-
-        {/* idle state */}
+        {/* idle placeholder */}
         {!active && (
           <div style={{
             position: 'absolute', inset: 0,
-            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10,
+            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12,
           }}>
-            <div style={{ fontSize: 52, opacity: 0.4 }}>📷</div>
-            <div style={{ color: '#666', fontSize: 14 }}>Camera is off</div>
+            <div style={{ fontSize: 56, opacity: 0.3 }}>📷</div>
+            <div style={{ color: '#555', fontSize: 14, fontWeight: 500 }}>Tap Start Scanner below</div>
           </div>
         )}
       </div>
 
-      <style>{`
-        @keyframes sweep {
-          0%   { top: 4px;              opacity: 0.8; }
-          50%  { top: calc(100% - 6px); opacity: 1;   }
-          100% { top: 4px;              opacity: 0.8; }
-        }
-        @keyframes flashin {
-          from { opacity: 0; } to { opacity: 1; }
-        }
-      `}</style>
+      <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.6} }`}</style>
 
-      {/* controls row */}
+      {/* ═══ Controls ═══ */}
       <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
         {!active ? (
           <button
             className="btn-primary"
             onClick={startScanner}
-            style={{ flex: 1, padding: '13px 0', fontSize: 15, fontWeight: 700, borderRadius: 10 }}
+            style={{ flex: 1, padding: '14px 0', fontSize: 16, fontWeight: 700, borderRadius: 12, letterSpacing: 0.3 }}
           >
             📷 Start Scanner
           </button>
@@ -311,40 +340,94 @@ export default function Scanner({ onDetected }: ScannerProps) {
           <>
             <button
               onClick={stopScanner}
-              style={{ flex: 1, padding: '13px 0', fontSize: 14, borderRadius: 10 }}
+              style={{ flex: 1, padding: '14px 0', fontSize: 14, borderRadius: 12 }}
             >
               ⏹ Stop
             </button>
             {torchSupported && (
-              <button
-                onClick={toggleTorch}
-                style={{
-                  padding: '13px 18px', fontSize: 20, borderRadius: 10,
-                  background: torchOn ? '#FFD700' : undefined,
-                  borderColor: torchOn ? '#FFD700' : undefined,
-                  boxShadow: torchOn ? '0 0 10px rgba(255,215,0,0.4)' : undefined,
-                }}
-                title="Toggle flashlight"
-              >🔦</button>
+              <button onClick={toggleTorch} style={{
+                padding: '14px 20px', fontSize: 22, borderRadius: 12,
+                background: torchOn ? '#FFD700' : undefined,
+                borderColor: torchOn ? '#e6c200' : undefined,
+                boxShadow: torchOn ? '0 0 14px rgba(255,215,0,0.5)' : undefined,
+                transition: 'all 0.2s',
+              }}>🔦</button>
             )}
           </>
         )}
       </div>
 
-      {/* status bar */}
-      <div style={{
-        marginTop: 10, padding: '8px 14px', borderRadius: 8,
-        background: error ? '#fef2f2'
-                  : status === 'detected' ? '#f0fdf4'
-                  : '#f9fafb',
-        border: `1px solid ${error ? '#fca5a5' : status === 'detected' ? '#86efac' : '#e5e7eb'}`,
-        fontSize: 13, textAlign: 'center',
-        color: error ? '#dc2626' : status === 'detected' ? '#166534' : '#6b7280',
-        fontWeight: status === 'detected' ? 600 : 400,
-        minHeight: 36, display: 'flex', alignItems: 'center', justifyContent: 'center',
-      }}>
-        {error || statusText}
-      </div>
+      {/* ═══ Status bar ═══ */}
+      {active && (
+        <div style={{
+          marginTop: 10, borderRadius: 10, overflow: 'hidden',
+          border: '1px solid #e5e7eb',
+        }}>
+          <div style={{
+            padding: '10px 14px',
+            background: status === 'detected' ? '#f0fdf4'
+                      : status === 'scanning'  ? '#f9fafb'
+                      :                          '#fff',
+            display: 'flex', alignItems: 'center', gap: 10,
+          }}>
+            <div style={{
+              width: 10, height: 10, borderRadius: '50%', flexShrink: 0,
+              background: status === 'detected' ? '#00a650'
+                        : status === 'scanning'  ? '#f59e0b'
+                        :                          '#9ca3af',
+              animation: status === 'scanning' ? 'pulse 1.2s infinite' : 'none',
+              boxShadow: status === 'scanning' ? '0 0 6px rgba(245,158,11,0.6)' : 'none',
+            }}/>
+            <div style={{ flex: 1 }}>
+              <div style={{
+                fontSize: 13, fontWeight: 600,
+                color: status === 'detected' ? '#166534' : status === 'scanning' ? '#92400e' : '#374151',
+              }}>
+                {status === 'idle'     ? 'Ready'
+               : status === 'starting' ? 'Starting camera...'
+               : status === 'scanning' ? '🔍 Scanning — point at the barcode'
+               :                         '✅ Barcode detected!'}
+              </div>
+              {status === 'scanning' && (
+                <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>
+                  Hold phone 15–25cm from barcode • Keep steady • Good lighting helps
+                </div>
+              )}
+              {status === 'detected' && detectedCode && (
+                <div style={{ fontFamily: 'monospace', fontSize: 13, color: '#166534', fontWeight: 700, marginTop: 3, wordBreak: 'break-all' }}>
+                  {detectedCode}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* scan quality bar */}
+          {status === 'scanning' && (
+            <div style={{ padding: '6px 14px 10px', background: '#f9fafb', borderTop: '1px solid #f3f4f6' }}>
+              <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 4 }}>
+                Light level {lowLight ? '🔴 Low — use flashlight' : '🟢 Good'}
+              </div>
+              <div style={{ height: 4, background: '#e5e7eb', borderRadius: 99 }}>
+                <div style={{
+                  height: '100%', borderRadius: 99,
+                  width: confidence + '%',
+                  background: confidence > 60 ? '#00a650' : confidence > 30 ? '#f59e0b' : '#ef4444',
+                  transition: 'width 0.3s, background 0.3s',
+                }}/>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* error */}
+      {error && (
+        <div style={{
+          marginTop: 10, padding: '12px 14px', borderRadius: 10,
+          background: '#fef2f2', border: '1px solid #fca5a5',
+          fontSize: 13, color: '#dc2626', fontWeight: 500,
+        }}>{error}</div>
+      )}
     </div>
   )
 }
